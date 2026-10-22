@@ -297,6 +297,7 @@ def build_orchestrator(
         state = BridgeState(config["state_file"])
 
     routine = overrides.get("routine")
+    wake_context = None
 
     if transport_name == "github":
         transport = _transport_override(overrides, "github_transport")
@@ -316,6 +317,13 @@ def build_orchestrator(
                 config["relay_token"],
             )
         allowed_logins = [config["builder_agent"]]
+        wake_context = {
+            "relay": {
+                "url": config["relay_url"],
+                "channel": config["relay_channel"],
+                "token": config["relay_token"],
+            }
+        }
         if routine is None:
             webhook = config.get("routine_webhook")
             key = config.get("routine_key")
@@ -332,6 +340,7 @@ def build_orchestrator(
         builder_agent=config["builder_agent"],
         allowed_logins=allowed_logins,
         new_id=overrides.get("new_id"),
+        wake_context=wake_context,
     )
 
 

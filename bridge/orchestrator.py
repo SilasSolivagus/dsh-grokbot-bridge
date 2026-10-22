@@ -396,6 +396,7 @@ class Orchestrator:
         builder_agent: Any,
         allowed_logins: Iterable[str],
         new_id: Optional[Callable[[], str]] = None,
+        wake_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.dsh = dsh
         self.transport = transport
@@ -409,6 +410,7 @@ class Orchestrator:
         elif not callable(new_id):
             raise ValueError("new_id must be callable")
         self.new_id = new_id
+        self.wake_context = {} if wake_context is None else dict(wake_context)
 
         # Keep the exact transport reference for cards opened in this process
         # so a poll never depends on the state file's integer normalization.
@@ -556,7 +558,9 @@ class Orchestrator:
             return
 
         try:
-            result = self.routine.wake({"issue": ref, "request": request})
+            wake_payload = {"issue": ref, "request": request}
+            wake_payload.update(self.wake_context)
+            result = self.routine.wake(wake_payload)
         except Exception as exc:  # adapter failure; do not retry blindly
             LOGGER.error("cannot wake routine for %s: %s", task_id, exc)
             counts["errors"] += 1

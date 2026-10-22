@@ -330,6 +330,21 @@ class OpenTaskTests(OrchestratorTestCase):
         self.assertEqual(saved["last_comment_id"], 0)
         self.assertEqual(saved["last_status"], "submitted")
 
+    def test_wake_context_is_forwarded_without_entering_the_envelope(self):
+        context = {
+            "relay": {
+                "url": "http://127.0.0.1:8787",
+                "channel": "1",
+                "token": "channel-token",
+            }
+        }
+        self.build(wake_context=context).run_once()
+
+        call = self.routine.calls[0]
+        self.assertEqual(call["relay"], context["relay"])
+        self.assertNotIn("relay", self.transport.opened[0])
+        self.assertNotIn("channel-token", repr(self.transport.opened[0]))
+
     def test_task_request_contains_only_allowed_envelope_fields(self):
         self.build().run_once()
 

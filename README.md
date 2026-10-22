@@ -54,7 +54,7 @@ Protocol details: [PROTOCOL.md](PROTOCOL.md)
 
 ## First transport test: TEST-003
 
-Issue #1 is the first issue-bus test.
+Issue [#1](https://github.com/SilasSolivagus/dsh-grokbot-bridge/issues/1) is the first issue-bus test.
 
 1. 掌柜 creates issue #1 with `examples/test-003.ping.json`.
 2. Origin reads the issue body and replies with one JSON comment.

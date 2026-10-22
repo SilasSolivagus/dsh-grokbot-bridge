@@ -16,12 +16,12 @@ def make_request(**overrides):
     data = {
         "bridge": BRIDGE,
         "message_id": "req-001",
-        "from": "掌柜",
-        "to": "Origin",
+        "from": "dsh",
+        "to": "grok",
         "card": "TEST-004",
         "task_id": "task-abc",
         "type": "task_request",
-        "agent": "掌柜",
+        "agent": "builder",
         "title": "Add widget",
         "instructions": "Do the thing.",
         "acceptance": ["Tests pass"],
@@ -35,12 +35,12 @@ def make_update(**overrides):
     data = {
         "bridge": BRIDGE,
         "message_id": "upd-001",
-        "from": "Origin",
-        "to": "掌柜",
+        "from": "grok",
+        "to": "dsh",
         "card": "TEST-004",
         "task_id": "task-abc",
         "type": "task_update",
-        "agent": "Origin",
+        "agent": "builder",
         "state": "in_progress",
         "note": "started",
     }
@@ -52,12 +52,12 @@ def make_complete(**overrides):
     data = {
         "bridge": BRIDGE,
         "message_id": "cmp-001",
-        "from": "Origin",
-        "to": "掌柜",
+        "from": "grok",
+        "to": "dsh",
         "card": "TEST-004",
         "task_id": "task-abc",
         "type": "task_complete",
-        "agent": "Origin",
+        "agent": "builder",
         "state": "done",
         "evidence": ["commit 1234abc", "https://github.com/example/pull/7"],
         "note": "finished",
@@ -70,12 +70,12 @@ def make_ack(**overrides):
     data = {
         "bridge": BRIDGE,
         "message_id": "ack-001",
-        "from": "Origin",
-        "to": "掌柜",
+        "from": "grok",
+        "to": "dsh",
         "card": "TEST-004",
         "task_id": "task-abc",
         "type": "ack",
-        "agent": "Origin",
+        "agent": "builder",
         "status": "received",
         "note": "got it",
     }
@@ -99,18 +99,38 @@ class ValidMessageTests(unittest.TestCase):
             {
                 "bridge": BRIDGE,
                 "message_id": "req-001",
-                "from": "掌柜",
-                "to": "Origin",
+                "from": "dsh",
+                "to": "grok",
                 "card": "TEST-004",
                 "task_id": "task-abc",
                 "type": "task_request",
-                "agent": "掌柜",
+                "agent": "builder",
                 "note": "please do it",
                 "title": "Add widget",
                 "instructions": "Do the thing.",
                 "acceptance": ["Tests pass"],
             },
         )
+
+    def test_valid_request_uses_transport_sides_and_actor_id(self):
+        parsed = parse_task_request(make_request())
+
+        self.assertEqual(parsed["from"], "dsh")
+        self.assertEqual(parsed["to"], "grok")
+        self.assertEqual(parsed["agent"], "builder")
+
+    def test_accepts_configured_actor_id(self):
+        for agent in ("builder", "office", "grok-actor-7"):
+            with self.subTest(agent=agent):
+                parsed = parse_task_request(make_request(agent=agent))
+                self.assertEqual(parsed["agent"], agent)
+
+    def test_agent_must_be_non_empty_string(self):
+        for agent in ("", "   ", 123, None):
+            with self.subTest(agent=agent):
+                with self.assertRaises(EnvelopeError) as caught:
+                    parse_task_request(make_request(agent=agent))
+                self.assertIn("agent", str(caught.exception))
 
     def test_task_request_defaults_optional_fields(self):
         raw = without(make_request(), "note", "acceptance")
@@ -245,13 +265,33 @@ class MalformedEnvelopeTests(unittest.TestCase):
 
     def test_rejects_wrong_direction(self):
         cases = [
-            (make_request(**{"from": "Origin"}), parse_task_request, "from"),
-            (make_request(to="掌柜"), parse_task_request, "to"),
-            (make_update(**{"from": "掌柜"}), parse_task_reply, "from"),
-            (make_update(to="Origin"), parse_task_reply, "to"),
-            (make_complete(**{"from": "掌柜"}), parse_task_reply, "from"),
-            (make_ack(to="Origin"), parse_task_reply, "to"),
+            (make_request(**{"from": "grok"}), parse_task_request, "from"),
+            (make_request(to="dsh"), parse_task_request, "to"),
+            (make_update(**{"from": "dsh"}), parse_task_reply, "from"),
+            (make_update(to="grok"), parse_task_reply, "to"),
+            (make_complete(**{"from": "dsh"}), parse_task_reply, "from"),
+            (make_ack(to="grok"), parse_task_reply, "to"),
         ]
+
+        for raw, parser, field in cases:
+            with self.subTest(field=field, raw=raw):
+                with self.assertRaises(EnvelopeError) as caught:
+                    parser(raw)
+                self.assertIn(field, str(caught.exception))
+
+    def test_rejects_display_names_as_transport_sides(self):
+        cases = []
+        for side in ("掌柜", "Origin"):
+            cases.extend(
+                [
+                    (make_request(**{"from": side}), parse_task_request, "from"),
+                    (make_request(to=side), parse_task_request, "to"),
+                    (make_update(**{"from": side}), parse_task_reply, "from"),
+                    (make_update(to=side), parse_task_reply, "to"),
+                    (make_complete(**{"from": side}), parse_task_reply, "from"),
+                    (make_ack(to=side), parse_task_reply, "to"),
+                ]
+            )
 
         for raw, parser, field in cases:
             with self.subTest(field=field, raw=raw):

@@ -9,31 +9,35 @@ Envelope (all types)::
     {
       "bridge": "dsh-grokbot-v1",
       "message_id": "uuid",       # stable id; used for dedupe
-      "from": "掌柜",              # 掌柜 or Origin
-      "to": "Origin",             # the other side
+      "from": "dsh",              # transport side: dsh or grok
+      "to": "grok",               # the other transport side
       "card": "TEST-004",
       "task_id": "task-abc",
       "type": "task_request",
-      "agent": "掌柜",
+      "agent": "builder",         # configured actor id, not a transport side
       "note": "optional, <= 500 chars"
     }
 
 Type-specific fields:
 
-``task_request`` (掌柜 -> Origin)
+``task_request`` (dsh -> grok)
     ``title`` (str), ``instructions`` (str), optional ``acceptance``
     (list of non-empty strings).
 
-``task_update`` (Origin -> 掌柜)
+``task_update`` (grok -> dsh)
     ``state`` is ``in_progress`` or ``blocked``; optional ``evidence``
     (list of non-empty strings). ``done`` belongs to ``task_complete``.
 
-``task_complete`` (Origin -> 掌柜)
+``task_complete`` (grok -> dsh)
     ``state`` must be ``done``; ``evidence`` must contain at least one
     non-empty string.
 
-``ack`` (Origin -> 掌柜)
+``ack`` (grok -> dsh)
     ``status`` is ``received``, ``rejected``, or ``error``.
+
+``from``/``to`` are transport sides (``dsh`` or ``grok``). ``agent`` is the
+configured actor id (for example ``builder`` or ``office``) and is not
+restricted to the transport sides.
 
 Unknown fields, unknown types/states/statuses, missing required fields, and
 prose (anything that is not a JSON object) raise :class:`EnvelopeError`.
@@ -45,7 +49,7 @@ import re
 from typing import Any, Dict, List
 
 BRIDGE = "dsh-grokbot-v1"
-ACTORS = ("掌柜", "Origin")
+ACTORS = ("dsh", "grok")
 
 TASK_REQUEST = "task_request"
 TASK_UPDATE = "task_update"
@@ -54,10 +58,10 @@ ACK = "ack"
 TYPES = (TASK_REQUEST, TASK_UPDATE, TASK_COMPLETE, ACK)
 
 DIRECTIONS = {
-    TASK_REQUEST: ("掌柜", "Origin"),
-    TASK_UPDATE: ("Origin", "掌柜"),
-    TASK_COMPLETE: ("Origin", "掌柜"),
-    ACK: ("Origin", "掌柜"),
+    TASK_REQUEST: ("dsh", "grok"),
+    TASK_UPDATE: ("grok", "dsh"),
+    TASK_COMPLETE: ("grok", "dsh"),
+    ACK: ("grok", "dsh"),
 }
 
 UPDATE_STATES = ("in_progress", "blocked")
@@ -319,7 +323,8 @@ def parse_task_request(raw: Any) -> Dict[str, Any]:
 
     Raises :class:`EnvelopeError` if the message is not a task request, is
     missing required fields, contains unknown fields, or has a wrong
-    direction (a request must travel from 掌柜 to Origin).
+    direction (a request must travel from dsh to grok). ``agent`` is an actor
+    id such as ``builder`` and is not restricted to the transport sides.
     """
     normalized = _parse_message(raw)
     if normalized["type"] != TASK_REQUEST:
@@ -330,7 +335,7 @@ def parse_task_request(raw: Any) -> Dict[str, Any]:
 
 
 def parse_task_reply(raw: Any) -> Dict[str, Any]:
-    """Validate an Origin reply and return a normalized copy.
+    """Validate a grok reply and return a normalized copy.
 
     Replies are ``task_update``, ``task_complete``, or ``ack``. A request is
     rejected. ``task_complete`` must carry ``state='done'`` and at least one

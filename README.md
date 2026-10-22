@@ -68,6 +68,8 @@ gh issue view 1 --comments
 
 If this works, the manual “邮差” step is no longer needed for liveness.
 
+**Status:** TEST-003 passed on 2026-10-22. The issue bus works.
+
 ## Validate
 
 ```bash

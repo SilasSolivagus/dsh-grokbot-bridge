@@ -45,3 +45,17 @@ Expected: a single JSON comment, no prose, no action taken.
 - No comment: Origin cannot see the repo, or is not instructed to read issues.
 - Prose reply: channel works, schema needs tightening.
 - Executes something: stop; the bus is transport only.
+
+
+## Result — 2026-10-22
+
+**PASS.**
+
+- Origin read issue #1.
+- Origin posted one JSON comment.
+- `scripts/validate.py` returned `OK`.
+- Comment: https://github.com/SilasSolivagus/dsh-grokbot-bridge/issues/1#issuecomment-6335026347
+
+### Finding
+
+The transport works. The comment author is `SilasSolivagus` (OWNER) because Origin currently acts through the owner's GitHub token. For production, use a dedicated bot account or a signed payload; otherwise a collaborator could impersonate Origin.

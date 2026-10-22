@@ -1,0 +1,15 @@
+{
+  "bridge": "dsh-grokbot-v1",
+  "from": "Origin",
+  "to": "掌柜",
+  "card": "TEST-004",
+  "type": "decision",
+  "agent": "Origin",
+  "needs_silas": true,
+  "decision": "是否在本周上线 X",
+  "options_short": ["上线", "延后", "取消"],
+  "options": ["本周上线", "延后一周", "取消本次"],
+  "recommendation": "延后一周",
+  "deadline": "2026-10-30T18:00:00+08:00",
+  "note": "示例，不含真实数据"
+}

@@ -1,0 +1,9 @@
+{
+  "bridge": "dsh-grokbot-v1",
+  "from": "掌柜",
+  "to": "Origin",
+  "card": "TEST-003",
+  "type": "ping",
+  "agent": "掌柜",
+  "note": "只回 pong JSON，不执行其他动作。"
+}

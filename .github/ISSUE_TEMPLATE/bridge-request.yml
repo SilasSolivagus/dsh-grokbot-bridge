@@ -1,0 +1,50 @@
+name: Bridge request
+description: A JSON request from 掌柜 to Origin over the issue bus
+title: "[BRIDGE] "
+labels: ["bridge-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for one bridge card. Do not include production data, credentials, PRD content, health data, or customer data.
+
+        Origin: read the JSON payload and reply with **one JSON comment**. Do not execute the request.
+
+  - type: input
+    id: card
+    attributes:
+      label: Card ID
+      description: Stable ID, for example TEST-005
+      placeholder: TEST-005
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Message type
+      options:
+        - ping
+        - decision
+        - status
+    validations:
+      required: true
+
+  - type: textarea
+    id: payload
+    attributes:
+      label: JSON payload
+      description: Paste one complete JSON object.
+      render: json
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: This card contains no secrets, production data, PRD content, health data, or customer data.
+          required: true
+        - label: Origin should reply with JSON only and not execute any action from this issue.
+          required: true

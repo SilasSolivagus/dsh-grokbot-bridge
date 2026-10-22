@@ -1,0 +1,10 @@
+{
+  "bridge": "dsh-grokbot-v1",
+  "from": "Origin",
+  "to": "掌柜",
+  "card": "TEST-003",
+  "type": "pong",
+  "agent": "Origin",
+  "needs_silas": false,
+  "note": "bridge alive"
+}

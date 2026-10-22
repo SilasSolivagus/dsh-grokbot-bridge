@@ -173,6 +173,7 @@ class FakeTransport:
         self.closed = []
         self.fail_open = None
         self.fail_replies = None
+        self.fail_close = None
 
     def open(self, request):
         self.opened.append(copy.deepcopy(request))
@@ -192,6 +193,8 @@ class FakeTransport:
 
     def close(self, ref):
         self.closed.append(ref)
+        if self.fail_close is not None:
+            raise self.fail_close
 
 
 class FakeRoutine:
@@ -628,6 +631,97 @@ class ReplyTests(OrchestratorTestCase):
         self.assertEqual(saved["last_status"], "done")
         self.assertEqual(saved["last_comment_id"], 101)
 
+    def test_task_complete_closes_the_transport_once(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                comment(
+                    reply(
+                        "task_complete",
+                        state="done",
+                        evidence=["tests pass"],
+                        message_id=MESSAGE_ID_2,
+                    )
+                )
+            ],
+            101,
+        )
+
+        counts = self.build().run_once()
+
+        self.assertEqual(
+            counts, {"opened": 0, "applied": 1, "skipped": 0, "errors": 0}
+        )
+        self.assertEqual(self.transport.closed, [ISSUE_REF])
+
+    def test_duplicate_task_complete_does_not_close_twice(self):
+        self.map_task()
+        duplicate = comment(
+            reply(
+                "task_complete",
+                state="done",
+                evidence=["tests pass"],
+                message_id=MESSAGE_ID_2,
+            )
+        )
+        self.transport.handler = lambda ref, after: ([duplicate], 101)
+
+        orchestrator = self.build()
+        orchestrator.run_once()
+        orchestrator.run_once()
+
+        self.assertEqual(self.transport.closed, [ISSUE_REF])
+
+    def test_close_failure_counts_an_error_but_keeps_done_state(self):
+        self.map_task()
+        self.transport.fail_close = TransportError("issue close failed")
+        self.transport.handler = lambda ref, after: (
+            [
+                comment(
+                    reply(
+                        "task_complete",
+                        state="done",
+                        evidence=["tests pass"],
+                        message_id=MESSAGE_ID_2,
+                    )
+                )
+            ],
+            101,
+        )
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(counts["errors"], 1)
+        self.assertEqual(self.transport.closed, [ISSUE_REF])
+        self.assertEqual(self.dsh.updates, [(TASK_ID, 1, "done")])
+
+        saved = self.reload_state()
+        self.assertEqual(saved.card_for_task(TASK_ID)["last_status"], "done")
+        self.assertEqual(saved.card_for_task(TASK_ID)["last_comment_id"], 101)
+        self.assertEqual(
+            saved.processed_messages, ["dsh-grokbot-v1:" + MESSAGE_ID_2]
+        )
+
+    def test_task_update_does_not_close_the_transport(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                comment(
+                    reply(
+                        "task_update",
+                        state="in_progress",
+                        message_id=MESSAGE_ID_2,
+                    )
+                )
+            ],
+            101,
+        )
+
+        self.build().run_once()
+
+        self.assertEqual(self.transport.closed, [])
+
     def test_task_complete_without_evidence_is_rejected_before_any_write(self):
         self.map_task()
         bad = reply("task_complete", state="done", message_id=MESSAGE_ID_2)
@@ -640,6 +734,7 @@ class ReplyTests(OrchestratorTestCase):
         self.assertEqual(self.dsh.updates, [])
         self.assertEqual(self.dsh.comments, [])
         self.assertEqual(self.reload_state().processed_messages, [])
+        self.assertEqual(self.transport.closed, [])
 
     def test_ack_makes_no_dsh_calls_but_is_marked_processed(self):
         self.map_task()
@@ -653,6 +748,7 @@ class ReplyTests(OrchestratorTestCase):
         self.assertEqual(counts["applied"], 1)
         self.assertEqual(self.dsh.updates, [])
         self.assertEqual(self.dsh.comments, [])
+        self.assertEqual(self.transport.closed, [])
         saved = self.reload_state()
         self.assertEqual(
             saved.processed_messages, ["dsh-grokbot-v1:" + MESSAGE_ID_2]
@@ -1004,6 +1100,7 @@ class DshFailureTests(OrchestratorTestCase):
         self.assertEqual(self.dsh.updates, [])
         self.assertEqual(self.dsh.comments, [])
         self.assertEqual(self.reload_state().processed_messages, [])
+        self.assertEqual(self.transport.closed, [])
 
     def test_current_terminal_dsh_task_is_not_regressed(self):
         self.map_task()

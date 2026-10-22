@@ -620,6 +620,8 @@ class Orchestrator:
                 card["last_comment_id"] = comment_id
                 card["last_status"] = payload["status"]
                 counts["applied"] += 1
+                if payload.get("close"):
+                    self._close_transport(ref, task_id, counts)
             elif outcome == "skipped":
                 counts["skipped"] += 1
                 LOGGER.info(
@@ -712,9 +714,11 @@ class Orchestrator:
         if kind == TASK_UPDATE:
             target = "in_progress"
             body_text = _update_comment(envelope)
+            close = False
         elif kind == TASK_COMPLETE:
             target = "done"
             body_text = _complete_comment(envelope)
+            close = True
         else:  # parse_task_reply only returns the three reply types
             return "skipped", "unsupported reply type {!r}".format(kind)
 
@@ -728,7 +732,22 @@ class Orchestrator:
             "comment_id": comment_id,
             "key": key,
             "status": target,
+            "close": close,
         }
+
+    def _close_transport(
+        self, ref: str, task_id: str, counts: Dict[str, int]
+    ) -> None:
+        """Close a completed task's thread without undoing the DSH write."""
+        try:
+            self.transport.close(ref)
+        except Exception as exc:  # the card is already done; keep it that way
+            counts["errors"] += 1
+            LOGGER.error(
+                "cannot close transport for %s after task_complete: %s",
+                task_id,
+                exc,
+            )
 
     def _expected_card(
         self, task_id: str, identifiers: Dict[str, Optional[str]]

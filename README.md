@@ -108,3 +108,7 @@ No dependencies. The validator checks message direction, required fields, decisi
 4. Relay queue: M1.5b default — [docs/RELAY.md](docs/RELAY.md)
 
 The bridge is successful when it is boring: create a task request, get JSON, validate, close.
+
+## TEST-004
+
+Real Grok routine over relay passed on 2026-10-23. See [docs/TEST-004.md](docs/TEST-004.md).

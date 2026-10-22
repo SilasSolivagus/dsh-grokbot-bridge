@@ -105,6 +105,24 @@ def comment(payload, **overrides):
     return value
 
 
+def request_echo(**overrides):
+    """Return the dsh ``task_request`` envelope that a relay echoes back."""
+    value = {
+        "bridge": "dsh-grokbot-v1",
+        "message_id": MESSAGE_ID_2,
+        "from": "dsh",
+        "to": "grok",
+        "card": CARD,
+        "task_id": TASK_ID,
+        "type": "task_request",
+        "agent": BUILDER,
+        "title": "Add the orchestrator",
+        "instructions": "Implement one poll cycle.",
+    }
+    value.update(overrides)
+    return value
+
+
 class FakeDsh:
     """In-memory DSH client with failure injection and call recording."""
 
@@ -849,6 +867,172 @@ class ReplyTests(OrchestratorTestCase):
 
         self.assertEqual(
             self.reload_state().card_for_task(TASK_ID)["last_comment_id"], 200
+        )
+
+
+# ---------------------------------------------------------------------------
+# Relay envelopes and GitHub comments
+# ---------------------------------------------------------------------------
+
+
+class ReplyShapeTests(OrchestratorTestCase):
+    """The same reply loop accepts GitHub comments and raw relay envelopes."""
+
+    def build(self, state=None, **kwargs):
+        # Relay replies carry the configured actor id as their author.
+        kwargs.setdefault("allowed_logins", [BUILDER])
+        return super().build(state=state, **kwargs)
+
+    def test_relay_task_update_is_applied_and_cursor_is_persisted(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                reply(
+                    "task_update",
+                    state="in_progress",
+                    note="Relay working.",
+                    message_id=MESSAGE_ID_2,
+                )
+            ],
+            7,
+        )
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(counts["errors"], 0)
+        self.assertEqual(self.dsh.updates, [(TASK_ID, 1, "in_progress")])
+        self.assertIn("Relay working.", self.dsh.comments[0][1])
+
+        saved = self.reload_state().card_for_task(TASK_ID)
+        self.assertEqual(saved["last_status"], "in_progress")
+        # The relay's message id is a UUID, not a state cursor.
+        self.assertEqual(saved["last_comment_id"], 7)
+
+    def test_relay_task_complete_sets_done_and_closes(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                reply(
+                    "task_complete",
+                    state="done",
+                    evidence=["relay: tests pass"],
+                    message_id=MESSAGE_ID_2,
+                )
+            ],
+            7,
+        )
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(self.dsh.updates, [(TASK_ID, 1, "done")])
+        self.assertIn("relay: tests pass", self.dsh.comments[0][1])
+        self.assertEqual(self.transport.closed, [ISSUE_REF])
+
+        saved = self.reload_state().card_for_task(TASK_ID)
+        self.assertEqual(saved["last_status"], "done")
+        self.assertEqual(saved["last_comment_id"], 7)
+
+    def test_relay_task_request_echo_is_skipped_without_dsh_mutation(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: ([request_echo()], 7)
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["applied"], 0)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(counts["errors"], 0)
+        self.assertEqual(self.dsh.updates, [])
+        self.assertEqual(self.dsh.comments, [])
+        self.assertEqual(self.reload_state().processed_messages, [])
+        self.assertEqual(
+            self.reload_state().card_for_task(TASK_ID)["last_status"], "submitted"
+        )
+
+    def test_relay_first_poll_can_skip_echo_and_apply_a_reply(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                request_echo(),
+                reply(
+                    "task_update",
+                    state="in_progress",
+                    message_id=MESSAGE_ID_3,
+                ),
+            ],
+            7,
+        )
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(self.dsh.updates, [(TASK_ID, 1, "in_progress")])
+        self.assertEqual(
+            self.reload_state().processed_messages,
+            ["dsh-grokbot-v1:" + MESSAGE_ID_3],
+        )
+
+    def test_relay_agent_must_be_allowlisted(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                reply(
+                    "task_update",
+                    state="in_progress",
+                    agent="mallory",
+                    message_id=MESSAGE_ID_2,
+                )
+            ],
+            7,
+        )
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(self.dsh.updates, [])
+        self.assertEqual(self.dsh.comments, [])
+
+    def test_relay_duplicate_message_id_is_skipped(self):
+        self.map_task()
+        duplicate = reply(
+            "task_update",
+            state="in_progress",
+            message_id=MESSAGE_ID_2,
+        )
+        self.transport.handler = lambda ref, after: ([duplicate], 7)
+
+        orchestrator = self.build()
+        first = orchestrator.run_once()
+        second = orchestrator.run_once()
+
+        self.assertEqual(first["applied"], 1)
+        self.assertEqual(second["applied"], 0)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(len(self.dsh.updates), 1)
+
+    def test_github_comment_shape_still_works(self):
+        self.map_task()
+        self.transport.handler = lambda ref, after: (
+            [
+                comment(
+                    reply(
+                        "task_update",
+                        state="in_progress",
+                        message_id=MESSAGE_ID_2,
+                    )
+                )
+            ],
+            101,
+        )
+
+        counts = self.build(allowed_logins=[GROK_LOGIN]).run_once()
+
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(self.dsh.updates, [(TASK_ID, 1, "in_progress")])
+        self.assertEqual(
+            self.reload_state().card_for_task(TASK_ID)["last_comment_id"], 101
         )
 
 

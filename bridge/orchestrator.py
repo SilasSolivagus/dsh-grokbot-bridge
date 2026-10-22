@@ -4,21 +4,23 @@ The orchestrator joins the injected pieces and owns every policy decision:
 
 * which DSH tasks become a ``task_request`` (assigned to ``builder_agent``,
   still active, not mapped yet);
-* which transport comments are allowed replies (allowlisted author, exactly one
-  JSON object, valid envelope, matching card/task/agent);
+* which transport replies are allowed (allowlisted author, exactly one JSON
+  object, valid envelope, matching card/task/agent);
 * which DSH writes a reply causes, with DSH remaining authoritative;
 * what is persisted and when, so a crash cannot repeat an applied reply.
 
 All dependencies are injected. This module deliberately imports no DSH,
 GitHub, or routine adapter module, so the same orchestrator can run over a
-GitHub issue thread, an HTTP relay, or an in-memory fake.
+GitHub issue thread, an HTTP relay, or an in-memory fake. Replies may be GitHub
+comments (``{id, body, author, createdAt}``) or raw relay envelopes; both are
+normalized to one internal shape before validation.
 
 Cycle contract:
 
 1. ``dsh.bootstrap()``. A missing/mistyped ``projects`` or ``tasks`` list is
    fatal for the cycle (fail closed) and raises :class:`OrchestratorError`.
 2. Every active task assigned to ``builder_agent`` that has no card mapping is
-   opened once: one ``task_request`` -> one transport issue -> one routine
+   opened once: one ``task_request`` -> one transport thread -> one routine
    wake -> one persisted card.
 3. Every card mapping is polled. Accepted replies are applied in order and the
    state file is saved immediately after each applied reply. A reply that
@@ -29,10 +31,11 @@ Cycle contract:
 
 Transport references and cursors are treated as opaque. The only assumption is
 the state file's documented shape: a transport reference must be a positive
-issue number so it can be stored in the ``issue`` card field, and a comment id
-/ cursor must be storable as ``last_comment_id`` (``GitHubTransport`` returns
-both as integers). Cursors are never cast; only the issue reference is
-normalized for the state file.
+integer so it can be stored in the ``issue`` card field, and a comment id or
+cursor must be storable as ``last_comment_id`` (both adapters supply integers).
+Cursors are never cast; only the issue reference is normalized for the state
+file. Relay replies have no per-message state id, so their cursor is persisted
+only after the batch is fully handled.
 """
 
 from __future__ import annotations
@@ -322,6 +325,50 @@ def _complete_comment(envelope: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_reply(message: Any) -> Dict[str, Any]:
+    """Normalize a GitHub comment or a raw relay envelope.
+
+    GitHub transports return ``{id, body, author, createdAt}``; relay
+    transports return the envelope object itself. A relay envelope is
+    identified by its ``bridge`` and ``type`` fields. Its author is the
+    envelope's ``agent``, its id is the envelope's ``message_id`` (useful for
+    logging and dedupe), and its body is the serialized envelope. Relay
+    messages have no per-comment state id: their position is the transport
+    cursor, so ``state_id`` is ``None``.
+    """
+    if not isinstance(message, dict):
+        raise ValueError("transport message is not an object")
+
+    if "bridge" in message and "type" in message:
+        message_id = message.get("message_id")
+        if message_id is None:
+            raise ValueError("relay envelope has no message_id")
+        try:
+            body = json.dumps(message, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "relay envelope is not JSON serializable: {}".format(exc)
+            ) from None
+        return {
+            "id": message_id,
+            "body": body,
+            "author": message.get("agent"),
+            "state_id": None,
+            "relay": True,
+        }
+
+    comment_id = message.get("id")
+    if comment_id is None:
+        raise ValueError("transport message has no id")
+    return {
+        "id": comment_id,
+        "body": message.get("body"),
+        "author": message.get("author"),
+        "state_id": comment_id,
+        "relay": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -609,15 +656,15 @@ class Orchestrator:
                 task_id, card, message, identifiers
             )
             if outcome == "applied":
-                comment_id = payload["comment_id"]
-                self.state.upsert_card(
-                    task_id,
-                    last_comment_id=comment_id,
-                    last_status=payload["status"],
-                )
+                state_id = payload["state_id"]
+                fields = {"last_status": payload["status"]}
+                if state_id is not None:
+                    fields["last_comment_id"] = state_id
+                self.state.upsert_card(task_id, **fields)
                 self.state.mark_processed(payload["key"])
                 self.state.save()
-                card["last_comment_id"] = comment_id
+                if state_id is not None:
+                    card["last_comment_id"] = state_id
                 card["last_status"] = payload["status"]
                 counts["applied"] += 1
                 if payload.get("close"):
@@ -647,25 +694,27 @@ class Orchestrator:
     ) -> Tuple[str, Any]:
         """Classify and apply one transport message.
 
-        Returns ``("applied", payload)``, ``("skipped", reason)``, or
+        Accepts a GitHub comment or a raw relay envelope. Returns
+        ``("applied", payload)``, ``("skipped", reason)``, or
         ``("error", reason)``. State is never mutated here; the caller saves
         only after an ``applied`` result.
         """
-        if not isinstance(message, dict):
-            return "skipped", "transport message is not an object"
+        try:
+            normalized = _normalize_reply(message)
+        except ValueError as exc:
+            return "skipped", str(exc)
 
-        comment_id = message.get("id")
-        if comment_id is None:
-            return "skipped", "transport message has no id"
-
-        if _is_old(comment_id, card.get("last_comment_id")):
+        message_id = normalized["id"]
+        if not normalized["relay"] and _is_old(
+            message_id, card.get("last_comment_id")
+        ):
             return "skipped", "comment is at or before last_comment_id"
 
-        author = _author(message.get("author"))
+        author = _author(normalized["author"])
         if author not in self.allowed_logins:
             return "skipped", "author {!r} is not allowlisted".format(author)
 
-        body = message.get("body")
+        body = normalized["body"]
         if not isinstance(body, str):
             return "skipped", "transport message has no text body"
 
@@ -695,7 +744,7 @@ class Orchestrator:
         kind = envelope["type"]
         if kind == ACK:
             return "applied", {
-                "comment_id": comment_id,
+                "state_id": normalized["state_id"],
                 "key": key,
                 "status": card.get("last_status") or "submitted",
             }
@@ -729,7 +778,7 @@ class Orchestrator:
             return "error", "DSH write failed: {}".format(exc)
 
         return "applied", {
-            "comment_id": comment_id,
+            "state_id": normalized["state_id"],
             "key": key,
             "status": target,
             "close": close,

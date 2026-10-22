@@ -218,8 +218,9 @@ class FakeTransport:
 class FakeRoutine:
     """In-memory routine webhook with call recording and failure injection."""
 
-    def __init__(self, run_uuid=RUN_UUID):
+    def __init__(self, run_uuid=RUN_UUID, response=None):
         self.run_uuid = run_uuid
+        self.response = response
         self.calls = []
         self.failure = None
 
@@ -227,6 +228,8 @@ class FakeRoutine:
         self.calls.append(copy.deepcopy(payload))
         if self.failure is not None:
             raise self.failure
+        if self.response is not None:
+            return copy.deepcopy(self.response)
         return {"runUuid": self.run_uuid}
 
 
@@ -489,14 +492,76 @@ class OpenTaskTests(OrchestratorTestCase):
         self.assertEqual(len(self.transport.opened), 1)
         self.assertEqual(self.reload_state().cards, {})
 
-    def test_missing_run_uuid_is_an_error_and_is_not_saved(self):
+    def test_missing_run_uuid_is_allowed_and_not_stored(self):
         self.routine.run_uuid = None
 
         counts = self.build().run_once()
 
-        self.assertEqual(counts["opened"], 0)
-        self.assertEqual(counts["errors"], 1)
-        self.assertEqual(self.reload_state().cards, {})
+        self.assertEqual(counts["opened"], 1)
+        self.assertEqual(counts["errors"], 0)
+        saved = self.reload_state().card_for_task(TASK_ID)
+        self.assertEqual(saved["issue"], 12)
+        self.assertEqual(saved["last_status"], "submitted")
+        self.assertNotIn("run_uuid", saved)
+        self.assertEqual(self.transport.closed, [])
+
+    def test_noop_wake_with_empty_dict_persists_mapping(self):
+        self.routine.response = {}
+
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["opened"], 1)
+        self.assertEqual(counts["errors"], 0)
+        saved = self.reload_state().card_for_task(TASK_ID)
+        self.assertEqual(saved["issue"], 12)
+        self.assertEqual(saved["last_comment_id"], 0)
+        self.assertEqual(saved["last_status"], "submitted")
+        self.assertNotIn("run_uuid", saved)
+        self.assertEqual(self.transport.closed, [])
+
+    def test_card_without_run_uuid_is_not_reopened(self):
+        self.routine.response = {}
+        orchestrator = self.build()
+
+        first = orchestrator.run_once()
+        second = orchestrator.run_once()
+
+        self.assertEqual(first["opened"], 1)
+        self.assertEqual(second["opened"], 0)
+        self.assertEqual(len(self.transport.opened), 1)
+        self.assertEqual(len(self.routine.calls), 1)
+
+    def test_relay_update_is_applied_after_run_uuidless_open(self):
+        self.routine.response = {}
+        self.transport.handler = lambda ref, after: (
+            [
+                reply(
+                    "task_update",
+                    state="in_progress",
+                    message_id=MESSAGE_ID_2,
+                )
+            ],
+            7,
+        )
+
+        counts = self.build(allowed_logins=[BUILDER]).run_once()
+
+        self.assertEqual(counts["opened"], 1)
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(counts["errors"], 0)
+        self.assertEqual(self.dsh.updates, [(TASK_ID, 1, "in_progress")])
+        saved = self.reload_state().card_for_task(TASK_ID)
+        self.assertNotIn("run_uuid", saved)
+        self.assertEqual(saved["last_status"], "in_progress")
+        self.assertEqual(saved["last_comment_id"], 7)
+
+    def test_routine_run_uuid_is_still_stored(self):
+        counts = self.build().run_once()
+
+        self.assertEqual(counts["opened"], 1)
+        self.assertEqual(counts["errors"], 0)
+        saved = self.reload_state().card_for_task(TASK_ID)
+        self.assertEqual(saved["run_uuid"], RUN_UUID)
 
     def test_task_without_identifier_is_not_opened(self):
         self.dsh.board_data = board([task(identifier=None)])

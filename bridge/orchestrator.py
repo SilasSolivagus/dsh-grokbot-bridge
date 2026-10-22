@@ -562,20 +562,37 @@ class Orchestrator:
             counts["errors"] += 1
             return
 
-        run_uuid = result.get("runUuid") if isinstance(result, dict) else None
-        if not isinstance(run_uuid, str) or not run_uuid.strip():
-            LOGGER.error("routine wake for %s returned no runUuid", task_id)
+        if not isinstance(result, dict):
+            LOGGER.error(
+                "routine wake for %s returned %s, expected an object",
+                task_id,
+                type(result).__name__,
+            )
             counts["errors"] += 1
             return
 
+        candidate = result.get("runUuid")
+        run_uuid = None
+        if isinstance(candidate, str) and candidate.strip():
+            run_uuid = candidate.strip()
+        else:
+            # Relay/bot-polling routines have no run to identify. Persist the
+            # mapping without a run_uuid instead of failing or storing a blank.
+            LOGGER.info(
+                "routine wake for %s returned no runUuid; "
+                "continuing in relay/bot-polling mode",
+                task_id,
+            )
+
         self._refs[task_id] = ref
-        self.state.upsert_card(
-            task_id,
-            issue=issue,
-            run_uuid=run_uuid.strip(),
-            last_comment_id=0,
-            last_status="submitted",
-        )
+        card_fields: Dict[str, Any] = {
+            "issue": issue,
+            "last_comment_id": 0,
+            "last_status": "submitted",
+        }
+        if run_uuid is not None:
+            card_fields["run_uuid"] = run_uuid
+        self.state.upsert_card(task_id, **card_fields)
         self.state.save()
         counts["opened"] += 1
 
